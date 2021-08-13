@@ -31,7 +31,7 @@ func (r *Redsync) NewMutex(name string, options ...Option) *Mutex {
 		expiry: 5 * time.Second,
 		tries:  32,
 		delayFunc: func(tries int) time.Duration {
-			return time.Duration(rand.Intn(maxRetryDelayMilliSec-minRetryDelayMilliSec)+minRetryDelayMilliSec) * time.Millisecond
+			return time.Duration(rand.Intn(maxRetryDelayMilliSec-minRetryDelayMilliSec)*tries/32+minRetryDelayMilliSec) * time.Millisecond
 		},
 		genValueFunc: genValue,
 		factor:       0.1, //500ms

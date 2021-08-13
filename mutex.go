@@ -51,9 +51,9 @@ func (m *Mutex) Lock() error {
 // LockContext locks m. In case it returns an error on failure, you may retry to acquire the lock by calling this method again.
 func (m *Mutex) LockContext(ctx context.Context) error {
 	for i := 0; i < m.tries; i++ {
-		//if i != 0 {
-		//	time.Sleep(m.delayFunc(i))
-		//}
+		if i != 0 {
+			time.Sleep(m.delayFunc(i))
+		}
 
 		start := time.Now()
 		n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
