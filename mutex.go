@@ -56,7 +56,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		//}
 
 		start := time.Now()
-		n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
 			return m.acquire(ctx, pool)
 		})
 		if n == 0 && err != nil {
@@ -67,7 +67,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.factor)))
 		if n >= m.quorum && now.Before(until) {
 			m.until = until
-			println("n:", n, "\t m.successPools's length:", len(m.successPools))
+			//println("n:", n, "\t m.successPools's length:", len(m.successPools))
 			return nil
 		}
 
@@ -117,7 +117,7 @@ func (m *Mutex) Extend() (bool, error) {
 
 // ExtendContext resets the mutex's expiry and returns the status of expiry extension.
 func (m *Mutex) ExtendContext(ctx context.Context) (bool, error) {
-	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
 		return m.touch(ctx, pool, int(m.expiry/time.Millisecond))
 	})
 	return n >= m.quorum, err
@@ -132,37 +132,37 @@ func (m *Mutex) SetVersion(version int64) (bool, error) {
 }
 
 func (m *Mutex) SetVersionContext(ctx context.Context, version int64) (bool, error) {
-	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
 		return m.update(ctx, pool, version)
 	})
 	return n >= m.quorum, err
 }
 
 func (m *Mutex) ValidContext(ctx context.Context) (bool, error) {
-	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
 		return m.valid(ctx, pool)
 	})
 	return n >= m.quorum, err
 }
 
-func (m *Mutex) valid(ctx context.Context, pool redis.Pool) (bool, error) {
+func (m *Mutex) valid(ctx context.Context, pool redis.Pool) (bool, error, int64) {
 	if time.Now().After(m.until) {
-		return false, nil
+		return false, nil, 0
 	}
 	conn, err := pool.Get(ctx)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	defer conn.Close()
 	reply, err := conn.HGet(m.name, "version")
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	version, err := strconv.Atoi(reply)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
-	return m.version == int64(version*-1), nil
+	return m.version == int64(version*-1), nil, 0
 }
 
 func genValue() (string, error) {
@@ -205,23 +205,23 @@ var lockScript = redis.NewScript(1, `
 	return value
 `)
 
-func (m *Mutex) acquire(ctx context.Context, pool redis.Pool) (bool, error) {
+func (m *Mutex) acquire(ctx context.Context, pool redis.Pool) (bool, error, int64) {
 	conn, err := pool.Get(ctx)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	defer conn.Close()
 	status, err := conn.Eval(lockScript, m.name, int(m.expiry/time.Millisecond))
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
-	if version, ok := status.(int64); ok && version != 0 {
-		//m.successPools = append(m.successPools, &pool)
-		if version >= m.version {
-			m.version = version
-		}
-	}
-	return status != int64(0), nil
+	version, _ := status.(int64)
+	//if version, ok := status.(int64); ok && version != 0 {
+	//	if version >= m.version {
+	//		m.version = version
+	//	}
+	//}
+	return status != int64(0), nil, version
 }
 
 var releaseScript = redis.NewScript(1, `
@@ -379,17 +379,17 @@ var touchScript = redis.NewScript(1, `
 	end
 `)
 
-func (m *Mutex) touch(ctx context.Context, pool redis.Pool, expiry int) (bool, error) {
+func (m *Mutex) touch(ctx context.Context, pool redis.Pool, expiry int) (bool, error, int64) {
 	conn, err := pool.Get(ctx)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	defer conn.Close()
 	status, err := conn.Eval(touchScript, m.name, int(m.version), expiry)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
-	return status != int64(0), nil
+	return status != int64(0), nil, 0
 }
 
 var updateScript = redis.NewScript(1, `
@@ -419,36 +419,39 @@ var updateScript = redis.NewScript(1, `
 	end
 `)
 
-func (m *Mutex) update(ctx context.Context, pool redis.Pool, newVersion int64) (bool, error) {
+func (m *Mutex) update(ctx context.Context, pool redis.Pool, newVersion int64) (bool, error, int64) {
 	conn, err := pool.Get(ctx)
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	defer conn.Close()
 	status, err := conn.Eval(updateScript, m.name, int(m.version), int(newVersion))
 	if err != nil {
-		return false, err
+		return false, err, 0
 	}
 	if status != 0 {
 		m.version = newVersion
 	}
-	return status != int64(0), nil
+	return status != int64(0), nil, 0
 }
 
-func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, error) {
+func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error, int64)) (int, error) {
 	type result struct {
-		Status bool
-		Err    error
+		Status  bool
+		Err     error
+		pool    *redis.Pool
+		version int64
 	}
 
 	ch := make(chan result)
 	for _, pool := range m.pools {
 		go func(pool redis.Pool) {
 			r := result{}
-			r.Status, r.Err = actFn(pool)
-			if r.Status {
-				m.successPools = append(m.successPools, &pool)
-			}
+			r.Status, r.Err, r.version = actFn(pool)
+			r.pool = &pool
+			//if r.Status {
+			//	m.successPools = append(m.successPools, &pool)
+			//}
 			ch <- r
 		}(pool)
 	}
@@ -458,6 +461,10 @@ func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, erro
 		r := <-ch
 		if r.Status {
 			n++
+			m.successPools = append(m.successPools, r.pool)
+			if r.version >= m.version {
+				m.version = r.version
+			}
 		} else if r.Err != nil {
 			err = multierror.Append(err, r.Err)
 		}

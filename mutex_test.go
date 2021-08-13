@@ -379,7 +379,6 @@ func assertAcquiredVersion(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 			n++
 		}
 	}
-	println()
 	if n < mutex.quorum {
 		for _, item := range mutex.successPools {
 			println(item)
