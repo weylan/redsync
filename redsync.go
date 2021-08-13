@@ -14,13 +14,13 @@ const (
 
 // Redsync provides a simple method for creating distributed mutexes using multiple Redis connection pools.
 type Redsync struct {
-	pools redis.Pool
+	pools []redis.Pool
 }
 
 // New creates and returns a new Redsync instance from given Redis connection pools.
 func New(pools ...redis.Pool) *Redsync {
 	return &Redsync{
-		pools: pools[0],
+		pools: pools,
 	}
 }
 
@@ -35,8 +35,9 @@ func (r *Redsync) NewMutex(name string, options ...Option) *Mutex {
 		},
 		genValueFunc: genValue,
 		factor:       0.1, //500ms
-		quorum:       1,
+		quorum:       len(r.pools)/2 + 1,
 		pools:        r.pools,
+		successPools: make([]*redis.Pool, 0),
 	}
 	for _, o := range options {
 		o.Apply(m)

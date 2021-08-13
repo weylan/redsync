@@ -1,6 +1,7 @@
 package redsync
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -8,8 +9,14 @@ import (
 	"github.com/weylan/redsync/redis"
 )
 
+func TestT(t *testing.T) {
+	for {
+		TestMutex(t)
+	}
+}
+
 func TestMutex(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex", v.poolCount)
 			orderCh := make(chan int)
@@ -21,7 +28,7 @@ func TestMutex(t *testing.T) {
 					}
 					defer mutex.Unlock()
 
-					assertAcquired(t, v.pools, mutex)
+					assertAcquiredVersion(t, v.pools, mutex)
 
 					orderCh <- i
 				}(i, mutex)
@@ -321,8 +328,9 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 			delayFunc:    func(tries int) time.Duration { return 500 * time.Millisecond },
 			genValueFunc: nil,
 			factor:       0.01,
-			quorum:       1,
-			pools:        pools[0],
+			quorum:       len(pools)/2 + 1,
+			pools:        pools,
+			successPools: make([]*redis.Pool, 0),
 		}
 	}
 	return mutexes
@@ -332,11 +340,51 @@ func assertAcquired(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	n := 0
 	values := getPoolValues(pools, mutex.name)
 	for _, value := range values {
+		fmt.Println(value, mutex.version)
 		if value == strconv.Itoa(int(mutex.version)*-1) {
 			n++
 		}
 	}
 	if n < mutex.quorum {
+		t.Fatalf("Expected n >= %d, got %d", mutex.quorum, n)
+	}
+}
+
+func getPoolVersion(pools []*redis.Pool, name string) []string {
+	values := make([]string, len(pools))
+	for i, pool := range pools {
+		if pool != nil {
+			conn, err := (*pool).Get(nil)
+			if err != nil {
+				panic(err)
+			}
+			value, err := conn.HGet(name, "version")
+			if err != nil {
+				panic(err)
+			}
+			_ = conn.Close()
+			values[i] = value
+		}
+	}
+	return values
+}
+
+func assertAcquiredVersion(t *testing.T, pools []redis.Pool, mutex *Mutex) {
+	n := 0
+	values := getPoolVersion(mutex.successPools, mutex.name)
+	for _, value := range values {
+		fmt.Println(value, "_", mutex.version)
+		v, _ := strconv.Atoi(value)
+		if v < 0 && v >= int(mutex.version)*-1 {
+			n++
+		}
+	}
+	println()
+	if n < mutex.quorum {
+		for _, item := range mutex.successPools {
+			println(item)
+		}
+		println(len(values))
 		t.Fatalf("Expected n >= %d, got %d", mutex.quorum, n)
 	}
 }

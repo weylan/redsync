@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/weylan/redsync/redis"
 )
 
@@ -15,9 +16,8 @@ type DelayFunc func(tries int) time.Duration
 
 // A Mutex is a distributed mutual exclusion lock.
 type Mutex struct {
-	name        string
-	expiry      time.Duration
-	processTime time.Duration
+	name   string
+	expiry time.Duration
 
 	tries     int
 	delayFunc DelayFunc
@@ -30,7 +30,8 @@ type Mutex struct {
 	version      int64
 	until        time.Time
 
-	pools redis.Pool
+	pools        []redis.Pool
+	successPools []*redis.Pool
 }
 
 // Name returns mutex name (i.e. the Redis key).
@@ -49,30 +50,38 @@ func (m *Mutex) Lock() error {
 
 // LockContext locks m. In case it returns an error on failure, you may retry to acquire the lock by calling this method again.
 func (m *Mutex) LockContext(ctx context.Context) error {
-	var err error
-	var ok bool
-
 	for i := 0; i < m.tries; i++ {
-		if i != 0 {
-			time.Sleep(m.delayFunc(i))
-		}
+		//if i != 0 {
+		//	time.Sleep(m.delayFunc(i))
+		//}
 
 		start := time.Now()
-
-		ok, err = m.acquire(ctx, m.pools)
-		if !ok && err != nil {
+		n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.acquire(ctx, pool)
+		})
+		if n == 0 && err != nil {
 			return err
 		}
 
 		now := time.Now()
 		until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.factor)))
-		if ok && now.Before(until) {
+		if n >= m.quorum && now.Before(until) {
 			m.until = until
+			println("n:", n, "\t m.successPools's length:", len(m.successPools))
 			return nil
 		}
-		//m.release(ctx, m.pools, m.version+1)
-	}
 
+		//_, _ = m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		//	return m.release(ctx, pool, m.version)
+		//})
+		for _, p := range m.successPools {
+			if p != nil {
+				m.failRelease(ctx, *p)
+				//m.successPools[idx] = nil
+				m.successPools = m.successPools[0:0]
+			}
+		}
+	}
 	return ErrFailed
 }
 
@@ -83,15 +92,22 @@ func (m *Mutex) Unlock() (bool, error) {
 
 // UnlockContext unlocks m and returns the status of unlock.
 func (m *Mutex) UnlockContext(ctx context.Context) (bool, error) {
-	return m.release(ctx, m.pools, m.version+1)
+	n, err := m.actOnPoolsAsyncForVersionUnlock(func(pool redis.Pool) (bool, error) {
+		return m.forceRelease(ctx, pool, m.version+1)
+	})
+	m.successPools = m.successPools[0:0]
+	return n >= m.quorum, err
 }
 
 func (m *Mutex) UnlockVersion(version int64) (bool, error) {
-	return m.release(nil, m.pools, version)
+	return m.UnlockVersionContext(nil, version)
 }
 
 func (m *Mutex) UnlockVersionContext(ctx context.Context, version int64) (bool, error) {
-	return m.release(ctx, m.pools, version)
+	n, err := m.actOnPoolsAsyncForVersionUnlock(func(pool redis.Pool) (bool, error) {
+		return m.release(ctx, pool, m.version+1)
+	})
+	return n >= m.quorum, err
 }
 
 // Extend resets the mutex's expiry and returns the status of expiry extension.
@@ -101,7 +117,10 @@ func (m *Mutex) Extend() (bool, error) {
 
 // ExtendContext resets the mutex's expiry and returns the status of expiry extension.
 func (m *Mutex) ExtendContext(ctx context.Context) (bool, error) {
-	return m.touch(ctx, m.pools, int(m.expiry/time.Millisecond))
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		return m.touch(ctx, pool, int(m.expiry/time.Millisecond))
+	})
+	return n >= m.quorum, err
 }
 
 func (m *Mutex) Valid() (bool, error) {
@@ -109,15 +128,21 @@ func (m *Mutex) Valid() (bool, error) {
 }
 
 func (m *Mutex) SetVersion(version int64) (bool, error) {
-	return m.update(nil, m.pools, version)
+	return m.SetVersionContext(nil, version)
 }
 
 func (m *Mutex) SetVersionContext(ctx context.Context, version int64) (bool, error) {
-	return m.update(ctx, m.pools, version)
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		return m.update(ctx, pool, version)
+	})
+	return n >= m.quorum, err
 }
 
 func (m *Mutex) ValidContext(ctx context.Context) (bool, error) {
-	return m.valid(ctx, m.pools)
+	n, err := m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
+		return m.valid(ctx, pool)
+	})
+	return n >= m.quorum, err
 }
 
 func (m *Mutex) valid(ctx context.Context, pool redis.Pool) (bool, error) {
@@ -191,7 +216,10 @@ func (m *Mutex) acquire(ctx context.Context, pool redis.Pool) (bool, error) {
 		return false, err
 	}
 	if version, ok := status.(int64); ok && version != 0 {
-		m.version = version
+		//m.successPools = append(m.successPools, &pool)
+		if version >= m.version {
+			m.version = version
+		}
 	}
 	return status != int64(0), nil
 }
@@ -236,6 +264,90 @@ func (m *Mutex) release(ctx context.Context, pool redis.Pool, newVersion int64) 
 	}
 	if status != 0 {
 		m.version = newVersion
+	}
+	return status != 0, nil
+}
+
+var forceReleaseScript = redis.NewScript(1, `
+	local key = KEYS[1]
+	local result = redis.call("HMGET", key, "version", "expire")
+	local value = result[1]
+	local expire = result[2]
+	
+	if not value then
+		return 0
+	end
+
+	if type(value) == "string" then
+		value = tonumber(value)
+	end
+
+	if value >= 0 then
+		return 0
+	end
+
+	if value >= -1 * ARGV[1] then
+		value = ARGV[2]
+	else
+		return 0
+	end
+
+	redis.call("HMSET", key, "version", value, "expire", 0)
+	return 1
+`)
+
+func (m *Mutex) forceRelease(ctx context.Context, pool redis.Pool, newVersion int64) (bool, error) {
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	status, err := conn.Eval(forceReleaseScript, m.name, int(m.version), int(newVersion))
+	if err != nil {
+		return false, err
+	}
+	if status != 0 {
+		m.version = newVersion
+	}
+	return status != 0, nil
+}
+
+var failReleaseScript = redis.NewScript(1, `
+	local key = KEYS[1]
+	local result = redis.call("HMGET", key, "version", "expire")
+	local value = result[1]
+	local expire = result[2]
+	
+	if not value then
+		return 0
+	end
+
+	if type(value) == "string" then
+		value = tonumber(value)
+	end
+
+	if value >= 0 then
+		return 0
+	end
+	
+	value = -1 * value
+
+	redis.call("HMSET", key, "version", value, "expire", 0)
+	return 1
+`)
+
+func (m *Mutex) failRelease(ctx context.Context, pool redis.Pool) (bool, error) {
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	status, err := conn.Eval(failReleaseScript, m.name)
+	if err != nil {
+		return false, err
+	}
+	if status != 0 {
+
 	}
 	return status != 0, nil
 }
@@ -323,29 +435,61 @@ func (m *Mutex) update(ctx context.Context, pool redis.Pool, newVersion int64) (
 	return status != int64(0), nil
 }
 
-//func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, error) {
-//	type result struct {
-//		Status bool
-//		Err    error
-//	}
-//
-//	ch := make(chan result)
-//	for _, pool := range m.pools {
-//		go func(pool redis.Pool) {
-//			r := result{}
-//			r.Status, r.Err = actFn(pool)
-//			ch <- r
-//		}(pool)
-//	}
-//	n := 0
-//	var err error
-//	for range m.pools {
-//		r := <-ch
-//		if r.Status {
-//			n++
-//		} else if r.Err != nil {
-//			err = multierror.Append(err, r.Err)
-//		}
-//	}
-//	return n, err
-//}
+func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, error) {
+	type result struct {
+		Status bool
+		Err    error
+	}
+
+	ch := make(chan result)
+	for _, pool := range m.pools {
+		go func(pool redis.Pool) {
+			r := result{}
+			r.Status, r.Err = actFn(pool)
+			if r.Status {
+				m.successPools = append(m.successPools, &pool)
+			}
+			ch <- r
+		}(pool)
+	}
+	n := 0
+	var err error
+	for range m.pools {
+		r := <-ch
+		if r.Status {
+			n++
+		} else if r.Err != nil {
+			err = multierror.Append(err, r.Err)
+		}
+	}
+	return n, err
+}
+
+func (m *Mutex) actOnPoolsAsyncForVersionUnlock(actFn func(redis.Pool) (bool, error)) (int, error) {
+	type result struct {
+		Status bool
+		Err    error
+	}
+
+	ch := make(chan result)
+	for _, pool := range m.successPools {
+		if pool != nil {
+			go func(pool redis.Pool) {
+				r := result{}
+				r.Status, r.Err = actFn(pool)
+				ch <- r
+			}(*pool)
+		}
+	}
+	n := 0
+	var err error
+	for range m.successPools {
+		r := <-ch
+		if r.Status {
+			n++
+		} else if r.Err != nil {
+			err = multierror.Append(err, r.Err)
+		}
+	}
+	return n, err
+}
