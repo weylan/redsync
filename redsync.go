@@ -37,7 +37,7 @@ func (r *Redsync) NewMutex(name string, options ...Option) *Mutex {
 		factor:       0.1, //500ms
 		quorum:       len(r.pools)/2 + 1,
 		pools:        r.pools,
-		successPools: make([]*redis.Pool, 0),
+		successPools: make([]redis.Pool, 0),
 	}
 	for _, o := range options {
 		o.Apply(m)

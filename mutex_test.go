@@ -1,7 +1,6 @@
 package redsync
 
 import (
-	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -119,7 +118,7 @@ func TestMutexUnlockExpired(t *testing.T) {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
 			if !ok {
-				t.Fatalf("Expected ok == false, got %v", ok)
+				t.Fatalf("Expected ok == true, got %v", ok)
 			}
 		})
 	}
@@ -140,7 +139,8 @@ func TestMutexQuorum(t *testing.T) {
 	//				if err != nil {
 	//					t.Fatalf("mutex lock failed: %s", err)
 	//				}
-	//				assertAcquired(t, v.pools, mutex)
+	//				assertAcquiredVersion(t, v.pools, mutex)
+	//				//assertAcquired(t, v.pools, mutex)
 	//			} else {
 	//				err := mutex.Lock()
 	//				if err != ErrFailed {
@@ -163,7 +163,7 @@ func TestValid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			ok, err := mutex1.Valid()
 			if err != nil {
@@ -194,13 +194,13 @@ func TestSetVersion(t *testing.T) {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
 			defer mutex1.Unlock()
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			ok, err := mutex1.SetVersion(100)
 			if !ok || err != nil || mutex1.Version() != 100 {
 				t.Fatalf("mutex set version failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 		})
 	}
 }
@@ -216,15 +216,15 @@ func TestMutexLockUnlockSplit(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			mutex2 := rs.NewMutex(key, WithExpiry(time.Hour), WithVersion(mutex1.version))
 			ok, err := mutex2.Unlock()
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if !ok {
-				t.Fatalf("Expected a valid mutex")
+			if ok {
+				t.Fatalf("Expected a invalid mutex")
 			}
 		})
 	}
@@ -241,25 +241,25 @@ func TestMutexLockUnlockVersion(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			mutex2 := rs.NewMutex(key, WithExpiry(time.Hour), WithVersion(mutex1.version))
 			ok, err := mutex2.UnlockVersion(100)
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if !ok {
-				t.Fatalf("Expected a valid mutex")
+			if ok {
+				t.Fatalf("Expected a invalid mutex")
 			}
 			ok, err = mutex1.SetVersion(100)
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if ok {
-				t.Fatalf("Expected wrong")
+			if !ok {
+				t.Fatalf("Expected true")
 			}
-			mutex2.version *= -1
-			assertAcquired(t, v.pools, mutex2)
+			//mutex2.version *= -1
+			//assertAcquiredVersion(t, v.pools, mutex2)
 		})
 	}
 }
@@ -330,7 +330,7 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 			factor:       0.01,
 			quorum:       len(pools)/2 + 1,
 			pools:        pools,
-			successPools: make([]*redis.Pool, 0),
+			successPools: make([]redis.Pool, 0),
 		}
 	}
 	return mutexes
@@ -340,7 +340,6 @@ func assertAcquired(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	n := 0
 	values := getPoolValues(pools, mutex.name)
 	for _, value := range values {
-		fmt.Println(value, mutex.version)
 		if value == strconv.Itoa(int(mutex.version)*-1) {
 			n++
 		}
@@ -350,11 +349,11 @@ func assertAcquired(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	}
 }
 
-func getPoolVersion(pools []*redis.Pool, name string) []string {
+func getPoolVersion(pools []redis.Pool, name string) []string {
 	values := make([]string, len(pools))
 	for i, pool := range pools {
 		if pool != nil {
-			conn, err := (*pool).Get(nil)
+			conn, err := pool.Get(nil)
 			if err != nil {
 				panic(err)
 			}
@@ -373,17 +372,12 @@ func assertAcquiredVersion(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	n := 0
 	values := getPoolVersion(mutex.successPools, mutex.name)
 	for _, value := range values {
-		fmt.Println(value, "_", mutex.version)
 		v, _ := strconv.Atoi(value)
 		if v < 0 && v >= int(mutex.version)*-1 {
 			n++
 		}
 	}
 	if n < mutex.quorum {
-		for _, item := range mutex.successPools {
-			println(item)
-		}
-		println(len(values))
 		t.Fatalf("Expected n >= %d, got %d", mutex.quorum, n)
 	}
 }
