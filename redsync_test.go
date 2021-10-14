@@ -26,10 +26,10 @@ type testCase struct {
 
 func makeCases(poolCount int) map[string]*testCase {
 	return map[string]*testCase{
-		"redigo": {
-			poolCount,
-			newMockPoolsRedigo(poolCount),
-		},
+		//"redigo": {
+		//	poolCount,
+		//	newMockPoolsRedigo(poolCount),
+		//},
 		"goredis": {
 			poolCount,
 			newMockPoolsGoredis(poolCount),
@@ -47,7 +47,7 @@ func makeCases(poolCount int) map[string]*testCase {
 
 // Maintain separate blocks of servers for each type of driver
 const SERVER_POOLS = 4
-const SERVER_POOL_SIZE = 8
+const SERVER_POOL_SIZE = 4
 const REDIGO_BLOCK = 0
 const GOREDIS_BLOCK = 1
 const GOREDIS_V7_BLOCK = 2
@@ -69,14 +69,18 @@ func TestMain(m *testing.M) {
 }
 
 func TestRedsync(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
+			cur := time.Now()
 			rs := New(v.pools...)
 
 			mutex := rs.NewMutex("test-redsync")
-			_ = mutex.Lock()
-
-			assertAcquired(t, v.pools, mutex)
+			err := mutex.Lock()
+			if err != nil {
+				t.Log(err)
+			}
+			t.Log(time.Now().Sub(cur))
+			assertAcquiredVersion(t, v.pools, mutex)
 		})
 	}
 }
@@ -87,12 +91,15 @@ func newMockPoolsRedigo(n int) []redis.Pool {
 	offset := REDIGO_BLOCK * SERVER_POOL_SIZE
 
 	for i := 0; i < n; i++ {
-		server := servers[i+offset]
+		//server := servers[i+offset]
 		pools[i] = redigo.NewPool(&redigolib.Pool{
 			MaxIdle:     3,
 			IdleTimeout: 240 * time.Second,
+			//Dial: func() (redigolib.Conn, error) {
+			//	return redigolib.Dial("unix", server.Socket())
+			//},
 			Dial: func() (redigolib.Conn, error) {
-				return redigolib.Dial("unix", server.Socket())
+				return redigolib.Dial("tcp", "127.0.0.1:6379", redigolib.DialDatabase(i+offset))
 			},
 			TestOnBorrow: func(c redigolib.Conn, t time.Time) error {
 				_, err := c.Do("PING")
@@ -110,8 +117,13 @@ func newMockPoolsGoredis(n int) []redis.Pool {
 
 	for i := 0; i < n; i++ {
 		client := goredislib.NewClient(&goredislib.Options{
-			Network: "unix",
-			Addr:    servers[i+offset].Socket(),
+			//Network: "unix",
+			//Addr:    servers[i+offset].Socket(),
+			Network: "tcp",
+			//Addr:    "127.0.0.1:6379",
+			Addr: "10.7.69.142:6379",
+			//Addr:    "10.7.69.238:6379",
+			DB: i + offset,
 		})
 		pools[i] = goredis.NewPool(client)
 	}
@@ -125,8 +137,11 @@ func newMockPoolsGoredisV7(n int) []redis.Pool {
 
 	for i := 0; i < n; i++ {
 		client := goredislib_v7.NewClient(&goredislib_v7.Options{
-			Network: "unix",
-			Addr:    servers[i+offset].Socket(),
+			Network: "tcp",
+			//Addr:    "127.0.0.1:6379",
+			Addr: "10.7.69.142:6379",
+			//Addr:    "10.7.69.238:6379",
+			DB: i + offset,
 		})
 		pools[i] = goredis_v7.NewPool(client)
 	}
@@ -140,8 +155,11 @@ func newMockPoolsGoredisV8(n int) []redis.Pool {
 
 	for i := 0; i < n; i++ {
 		client := goredislib_v8.NewClient(&goredislib_v8.Options{
-			Network: "unix",
-			Addr:    servers[i+offset].Socket(),
+			Network: "tcp",
+			//Addr:    "127.0.0.1:6379",
+			Addr: "10.7.69.142:6379",
+			//Addr:    "10.7.69.238:6379",
+			DB: i + offset,
 		})
 		pools[i] = goredis_v8.NewPool(client)
 	}

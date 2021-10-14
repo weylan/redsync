@@ -36,12 +36,32 @@ func BenchmarkMymutex(b *testing.B) {
 		"goredis_v7": 0.0,
 		"goredis_v8": 0.0,
 	}
+	totalSOT := map[string]int{}
+	minSOT := map[string]int{
+		"redigo":     50000000000,
+		"goredis":    50000000000,
+		"goredis_v7": 50000000000,
+		"goredis_v8": 50000000000,
+	}
+	maxSOT := map[string]int{
+		"redigo":     0,
+		"goredis":    0,
+		"goredis_v7": 0,
+		"goredis_v8": 0,
+	}
+	staticSOT := map[string]map[int]int{
+		"redigo":     {},
+		"goredis":    {},
+		"goredis_v7": {},
+		"goredis_v8": {},
+	}
 	ag := sync.WaitGroup{}
-	n := 15000
+	n := 5000
 	b.StartTimer()
-	testCount := 10
+	testCount := 5
+	poolCount := 3
 	for i := 0; i < testCount; i++ {
-		for k, v := range makeCases(3) {
+		for k, v := range makeCases(poolCount) {
 			counter := int64(n) //int64(b.N)
 			cur := time.Now()
 			rs := New(v.pools...)
@@ -52,11 +72,25 @@ func BenchmarkMymutex(b *testing.B) {
 					go func() {
 						mutex := rs.NewMutex("test-version-quorum-lock")
 						for atomic.AddInt64(&counter, -1) > 0 {
+							sinStart := time.Now()
 							if err := mutex.Lock(); err != nil {
 								atomic.AddInt64(&counter, 1)
 								continue
 							}
 							mutex.Unlock()
+							sinT := time.Now().Sub(sinStart)
+							totalSOT[k] += int(sinT)
+							if int(sinT) < minSOT[k] {
+								minSOT[k] = int(sinT)
+							}
+							if int(sinT) > maxSOT[k] {
+								maxSOT[k] = int(sinT)
+							}
+							if int(sinT)/1e8 >= 9 {
+								staticSOT[k][9]++
+							} else {
+								staticSOT[k][int(sinT)/1e8]++
+							}
 						}
 						ag.Done()
 					}()
@@ -75,8 +109,31 @@ func BenchmarkMymutex(b *testing.B) {
 			})
 		}
 	}
-	fmt.Printf("%-20s\t%-15s\t%-15s\t%-15s\n", "testCase", "avgOps", "minOps", "maxOps")
+	fmt.Printf("%s|%s|%s|%s|%s|%s|%s\n",
+		"testCase", "avgOps", "minOps", "maxOps", "avgSOT", "minSOT", "maxSOT")
 	for _, i := range cases {
-		fmt.Printf("%-20s\t%-15.8v\t%-15.8v\t%-15.8v\n", "Benchmark."+i, totalOps[i]/float64(testCount), minOps[i], maxOps[i])
+		fmt.Printf("%s|%v|%v|%v|%v|%v|%v\n",
+			"Benchmark."+i, totalOps[i]/float64(testCount), minOps[i], maxOps[i],
+			totalSOT[i]/(n*testCount), minSOT[i], maxSOT[i])
 	}
+	//fmt.Println(staticSOT)
+	//for _, i := range cases {
+	//	p := plot.New()
+	//	p.Title.Text = i+"_"+strconv.Itoa(poolCount)
+	//	bins := plotter.XYs{
+	//		//{0.0, float64(staticSOT[i][0])},
+	//		//{0.1, float64(staticSOT[i][1])},
+	//		{0.2, float64(staticSOT[i][2])},
+	//		{0.3, float64(staticSOT[i][3])},
+	//		{0.4, float64(staticSOT[i][4])},
+	//		{0.5, float64(staticSOT[i][5])},
+	//		{0.6, float64(staticSOT[i][6])},
+	//		{0.7, float64(staticSOT[i][7])},
+	//		{0.8, float64(staticSOT[i][8])},
+	//		{0.9, float64(staticSOT[i][9])},
+	//	}
+	//	h, _ := plotter.NewHistogram(bins, 10)
+	//	p.Add(h)
+	//	p.Save(2*vg.Inch, 2*vg.Inch, i+"Histogram_"+strconv.Itoa(poolCount)+".png")
+	//}
 }

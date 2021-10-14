@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	minRetryDelayMilliSec = 50
-	maxRetryDelayMilliSec = 250
+	minRetryDelayMilliSec = 10
+	maxRetryDelayMilliSec = 20
 )
 
 // Redsync provides a simple method for creating distributed mutexes using multiple Redis connection pools.

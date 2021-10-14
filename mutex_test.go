@@ -1,6 +1,9 @@
 package redsync
 
 import (
+	"fmt"
+	goredislib "github.com/go-redis/redis"
+	"github.com/weylan/redsync/redis/goredis"
 	"strconv"
 	"testing"
 	"time"
@@ -9,8 +12,34 @@ import (
 )
 
 func TestT(t *testing.T) {
-	for {
-		TestMutex(t)
+	//for {
+	//	TestMutex(t)
+	//}
+	client := goredislib.NewClient(&goredislib.Options{
+		Addr: "10.7.69.238:6379",
+	})
+	pool := goredis.NewPool(client) // or, pool := redigo.NewPool(...)
+
+	// Create an instance of redisync to be used to obtain a mutual exclusion
+	// lock.
+	rs := New(pool)
+
+	// Obtain a new mutex by using the same name for all instances wanting the
+	// same lock.
+	mutexname := "my-global-mutex"
+	mutex := rs.NewMutex(mutexname)
+
+	// Obtain a lock for our given mutex. After this is successful, no one else
+	// can obtain the same lock (the same mutex name) until we unlock it.
+	if err := mutex.Lock(); err != nil {
+		panic(err)
+	}
+
+	// Do your work that requires the lock.
+
+	// Release the lock so other processes or threads can obtain a lock.
+	if ok, err := mutex.Unlock(); !ok || err != nil {
+		panic("unlock failed")
 	}
 }
 
@@ -40,7 +69,7 @@ func TestMutex(t *testing.T) {
 }
 
 func TestMutexExtend(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(1) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -73,7 +102,7 @@ func TestMutexExtend(t *testing.T) {
 }
 
 func TestMutexExtendExpired(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -98,8 +127,30 @@ func TestMutexExtendExpired(t *testing.T) {
 	}
 }
 
+func TestMutexVersionExpired(t *testing.T) {
+	for k, v := range makeCases(3) {
+		t.Run(k, func(t *testing.T) {
+			mutexes := newTestMutexes(v.pools, "test-mutex", 1)
+			mutex := mutexes[0]
+			err := mutex.Lock()
+			if err != nil {
+				return
+			}
+			oldVersion := mutex.Version()
+			fmt.Println(oldVersion)
+			time.Sleep(10 * time.Second)
+			mutex.Lock()
+			//mutex.Unlock()
+			fmt.Println(mutex.version, " ", oldVersion)
+			if oldVersion+1 != mutex.Version() {
+				t.Fatalf("version not update")
+			}
+		})
+	}
+}
+
 func TestMutexUnlockExpired(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -119,6 +170,13 @@ func TestMutexUnlockExpired(t *testing.T) {
 			}
 			if !ok {
 				t.Fatalf("Expected ok == true, got %v", ok)
+			}
+			ok, err = mutex.Unlock()
+			if err != nil {
+				t.Fatalf("mutex unlock failed: %s", err)
+			}
+			if ok {
+				t.Fatalf("Excepted ok == false got %v", ok)
 			}
 		})
 	}
@@ -206,13 +264,14 @@ func TestSetVersion(t *testing.T) {
 }
 
 func TestMutexLockUnlockSplit(t *testing.T) {
-	for k, v := range makeCases(4) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			rs := New(v.pools...)
-			key := "test-split-lock"
+			key := "test-split-lock-0"
 
 			mutex1 := rs.NewMutex(key, WithExpiry(time.Hour))
 			err := mutex1.Lock()
+			defer mutex1.Unlock()
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
@@ -234,10 +293,11 @@ func TestMutexLockUnlockVersion(t *testing.T) {
 	for k, v := range makeCases(4) {
 		t.Run(k, func(t *testing.T) {
 			rs := New(v.pools...)
-			key := "test-release-lock-verison"
+			key := "test-release-lock-verison-0"
 
 			mutex1 := rs.NewMutex(key, WithExpiry(time.Hour))
 			err := mutex1.Lock()
+			defer mutex1.Unlock()
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
