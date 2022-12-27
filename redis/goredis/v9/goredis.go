@@ -2,13 +2,11 @@ package goredis
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
-	redsyncredis "github.com/weylan/redsync/redis"
+	"github.com/go-redis/redis/v9"
+	redsyncredis "github.com/go-redsync/redsync/v4/redis"
 )
 
 type pool struct {
@@ -16,18 +14,10 @@ type pool struct {
 }
 
 func (p *pool) Get(ctx context.Context) (redsyncredis.Conn, error) {
-	c := p.delegate
-	if ctx != nil {
-		switch client := c.(type) {
-		case *redis.ClusterClient:
-			c = client.WithContext(ctx)
-		case *redis.Client:
-			c = client.WithContext(ctx)
-		default:
-			return nil, errors.New("type error:" + reflect.TypeOf(c).Name())
-		}
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return &conn{c}, nil
+	return &conn{p.delegate, ctx}, nil
 }
 
 // NewPool returns a Goredis-based pool implementation.
@@ -36,32 +26,26 @@ func NewPool(delegate redis.UniversalClient) redsyncredis.Pool {
 }
 
 type conn struct {
-	delegate redis.Cmdable
+	delegate redis.UniversalClient
+	ctx      context.Context
 }
 
 func (c *conn) Get(name string) (string, error) {
-	value, err := c.delegate.Get(name).Result()
-	return value, noErrNil(err)
-}
-
-func (c *conn) HGet(name, field string) (string, error) {
-	value, err := c.delegate.HGet(name, field).Result()
+	value, err := c.delegate.Get(c.ctx, name).Result()
 	return value, noErrNil(err)
 }
 
 func (c *conn) Set(name string, value string) (bool, error) {
-	reply, err := c.delegate.Set(name, value, 0).Result()
-	return reply == "OK", noErrNil(err)
+	reply, err := c.delegate.Set(c.ctx, name, value, 0).Result()
+	return reply == "OK", err
 }
 
 func (c *conn) SetNX(name string, value string, expiry time.Duration) (bool, error) {
-	ok, err := c.delegate.SetNX(name, value, expiry).Result()
-	return ok, noErrNil(err)
+	return c.delegate.SetNX(c.ctx, name, value, expiry).Result()
 }
 
 func (c *conn) PTTL(name string) (time.Duration, error) {
-	expiry, err := c.delegate.PTTL(name).Result()
-	return expiry, noErrNil(err)
+	return c.delegate.PTTL(c.ctx, name).Result()
 }
 
 func (c *conn) Eval(script *redsyncredis.Script, keysAndArgs ...interface{}) (interface{}, error) {
@@ -72,13 +56,12 @@ func (c *conn) Eval(script *redsyncredis.Script, keysAndArgs ...interface{}) (in
 		for i := 0; i < script.KeyCount; i++ {
 			keys[i] = keysAndArgs[i].(string)
 		}
-
 		args = keysAndArgs[script.KeyCount:]
 	}
 
-	v, err := c.delegate.EvalSha(script.Hash, keys, args...).Result()
-	if err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
-		v, err = c.delegate.Eval(script.Src, keys, args...).Result()
+	v, err := c.delegate.EvalSha(c.ctx, script.Hash, keys, args...).Result()
+	if err != nil && strings.Contains(err.Error(), "NOSCRIPT ") {
+		v, err = c.delegate.Eval(c.ctx, script.Src, keys, args...).Result()
 	}
 	return v, noErrNil(err)
 }
@@ -89,8 +72,8 @@ func (c *conn) Close() error {
 }
 
 func noErrNil(err error) error {
-	if err != redis.Nil {
-		return err
+	if err == redis.Nil {
+		return nil
 	}
-	return nil
+	return err
 }

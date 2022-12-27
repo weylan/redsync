@@ -4,6 +4,7 @@ import (
 	"fmt"
 	goredislib "github.com/go-redis/redis"
 	"github.com/weylan/redsync/redis/goredis"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -68,6 +69,29 @@ func TestMutex(t *testing.T) {
 	}
 }
 
+func TestMutexAlreadyLocked(t *testing.T) {
+	for k, v := range makeCases(4) {
+		t.Run(k, func(t *testing.T) {
+			rs := New(v.pools...)
+			key := "test-lock"
+
+			mutex1 := rs.NewMutex(key)
+			err := mutex1.Lock()
+			if err != nil {
+				t.Fatalf("mutex lock failed: %s", err)
+			}
+			assertAcquired(t, v.pools, mutex1)
+
+			mutex2 := rs.NewMutex(key)
+			err = mutex2.Lock()
+			var errTaken *ErrTaken
+			if !errors.As(err, &errTaken) {
+				t.Fatalf("mutex was not already locked: %s", err)
+			}
+		})
+	}
+}
+
 func TestMutexExtend(t *testing.T) {
 	for k, v := range makeCases(1) {
 		t.Run(k, func(t *testing.T) {
@@ -117,8 +141,8 @@ func TestMutexExtendExpired(t *testing.T) {
 			time.Sleep(2 * time.Second)
 
 			ok, err := mutex.Extend()
-			if err != nil {
-				t.Fatalf("mutex extend failed: %s", err)
+			if err == nil {
+				t.Fatalf("mutex extend didn't fail")
 			}
 			if ok {
 				t.Fatalf("Expected ok == false, got %v", ok)
@@ -201,8 +225,8 @@ func TestMutexQuorum(t *testing.T) {
 	//				//assertAcquired(t, v.pools, mutex)
 	//			} else {
 	//				err := mutex.Lock()
-	//				if err != ErrFailed {
-	//					t.Fatalf("Expected err == %q, got %q", ErrFailed, err)
+	//				if errors.Is(err, &ErrNodeTaken{}) {
+	//					t.Fatalf("Expected err == %q, got %q", ErrNodeTaken{}, err)
 	//				}
 	//			}
 	//		}
@@ -382,12 +406,13 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 	mutexes := make([]*Mutex, n)
 	for i := 0; i < n; i++ {
 		mutexes[i] = &Mutex{
-			name:         name,
-			expiry:       8 * time.Second,
-			tries:        32,
-			delayFunc:    func(tries int) time.Duration { return 500 * time.Millisecond },
-			genValueFunc: nil,
-			factor:       0.01,
+			name:          name + "-" + strconv.Itoa(i),
+			expiry:        8 * time.Second,
+			tries:         32,
+			delayFunc:     func(tries int) time.Duration { return 500 * time.Millisecond },
+			genValueFunc:  nil,
+			driftFactor:   0.01,
+			timeoutFactor: 0.05,
 			quorum:       len(pools)/2 + 1,
 			pools:        pools,
 			successPools: make([]redis.Pool, 0),

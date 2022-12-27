@@ -8,12 +8,14 @@ import (
 	goredislib "github.com/go-redis/redis"
 	goredislib_v7 "github.com/go-redis/redis/v7"
 	goredislib_v8 "github.com/go-redis/redis/v8"
+	goredislib_v9 "github.com/go-redis/redis/v9"
 	redigolib "github.com/gomodule/redigo/redis"
 	"github.com/stvp/tempredis"
 	"github.com/weylan/redsync/redis"
 	"github.com/weylan/redsync/redis/goredis"
 	goredis_v7 "github.com/weylan/redsync/redis/goredis/v7"
 	goredis_v8 "github.com/weylan/redsync/redis/goredis/v8"
+	goredis_v9 "github.com/weylan/redsync/redis/goredis/v9"
 	"github.com/weylan/redsync/redis/redigo"
 )
 
@@ -42,19 +44,24 @@ func makeCases(poolCount int) map[string]*testCase {
 			poolCount,
 			newMockPoolsGoredisV8(poolCount),
 		},
+		"goredis_v9": {
+			poolCount,
+			newMockPoolsGoredisV9(poolCount),
+		},
 	}
 }
 
 // Maintain separate blocks of servers for each type of driver
-const SERVER_POOLS = 4
-const SERVER_POOL_SIZE = 4
-const REDIGO_BLOCK = 0
-const GOREDIS_BLOCK = 1
-const GOREDIS_V7_BLOCK = 2
-const GOREDIS_V8_BLOCK = 3
+const ServerPools = 4
+const ServerPoolSize = 4
+const RedigoBlock = 0
+const GoredisBlock = 1
+const GoredisV7Block = 2
+const GoredisV8Block = 3
+const GoredisV9Block = 4
 
 func TestMain(m *testing.M) {
-	for i := 0; i < SERVER_POOL_SIZE*SERVER_POOLS; i++ {
+	for i := 0; i < ServerPoolSize*ServerPools; i++ {
 		server, err := tempredis.Start(tempredis.Config{})
 		if err != nil {
 			panic(err)
@@ -88,7 +95,7 @@ func TestRedsync(t *testing.T) {
 func newMockPoolsRedigo(n int) []redis.Pool {
 	pools := make([]redis.Pool, n)
 
-	offset := REDIGO_BLOCK * SERVER_POOL_SIZE
+	offset := RedigoBlock * ServerPoolSize
 
 	for i := 0; i < n; i++ {
 		//server := servers[i+offset]
@@ -113,7 +120,7 @@ func newMockPoolsRedigo(n int) []redis.Pool {
 func newMockPoolsGoredis(n int) []redis.Pool {
 	pools := make([]redis.Pool, n)
 
-	offset := GOREDIS_BLOCK * SERVER_POOL_SIZE
+	offset := GoredisBlock * ServerPoolSize
 
 	for i := 0; i < n; i++ {
 		client := goredislib.NewClient(&goredislib.Options{
@@ -133,7 +140,7 @@ func newMockPoolsGoredis(n int) []redis.Pool {
 func newMockPoolsGoredisV7(n int) []redis.Pool {
 	pools := make([]redis.Pool, n)
 
-	offset := GOREDIS_V7_BLOCK * SERVER_POOL_SIZE
+	offset := GoredisV7Block * ServerPoolSize
 
 	for i := 0; i < n; i++ {
 		client := goredislib_v7.NewClient(&goredislib_v7.Options{
@@ -151,7 +158,7 @@ func newMockPoolsGoredisV7(n int) []redis.Pool {
 func newMockPoolsGoredisV8(n int) []redis.Pool {
 	pools := make([]redis.Pool, n)
 
-	offset := GOREDIS_V8_BLOCK * SERVER_POOL_SIZE
+	offset := GoredisV8Block * ServerPoolSize
 
 	for i := 0; i < n; i++ {
 		client := goredislib_v8.NewClient(&goredislib_v8.Options{
@@ -162,6 +169,21 @@ func newMockPoolsGoredisV8(n int) []redis.Pool {
 			DB: i + offset,
 		})
 		pools[i] = goredis_v8.NewPool(client)
+	}
+	return pools
+}
+
+func newMockPoolsGoredisV9(n int) []redis.Pool {
+	pools := make([]redis.Pool, n)
+
+	offset := GoredisV9Block * ServerPoolSize
+
+	for i := 0; i < n; i++ {
+		client := goredislib_v9.NewClient(&goredislib_v9.Options{
+			Network: "unix",
+			Addr:    servers[i+offset].Socket(),
+		})
+		pools[i] = goredis_v9.NewPool(client)
 	}
 	return pools
 }

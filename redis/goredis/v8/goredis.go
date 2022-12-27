@@ -20,6 +20,7 @@ func (p *pool) Get(ctx context.Context) (redsyncredis.Conn, error) {
 	return &conn{p.delegate, ctx}, nil
 }
 
+// NewPool returns a Goredis-based pool implementation.
 func NewPool(delegate redis.UniversalClient) redsyncredis.Pool {
 	return &pool{delegate}
 }
@@ -64,7 +65,7 @@ func (c *conn) Eval(script *redsyncredis.Script, keysAndArgs ...interface{}) (in
 	}
 
 	v, err := c.delegate.EvalSha(c.ctx, script.Hash, keys, args...).Result()
-	if err != nil && strings.HasPrefix(err.Error(), "NOSCRIPT ") {
+	if err != nil && strings.Contains(err.Error(), "NOSCRIPT ") {
 		v, err = c.delegate.Eval(c.ctx, script.Src, keys, args...).Result()
 	}
 	return v, noErrNil(err)
