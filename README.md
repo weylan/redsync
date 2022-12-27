@@ -29,9 +29,10 @@ Error handling is simplified to `panic` for shorter example.
 package main
 
 import (
+	
 	goredislib "github.com/go-redis/redis/v8"
-	"github.com/go-redsync/redsync/v4"
-	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
+	"github.com/go-weylan/redsync/v4"
+	"github.com/weylan/redsync/redis/goredis/v8"
 )
 
 func main() {

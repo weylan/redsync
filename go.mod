@@ -11,5 +11,4 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/stvp/tempredis v0.0.0-20181119212430-b82af8480203
-	gonum.org/v1/plot v0.9.0
 )

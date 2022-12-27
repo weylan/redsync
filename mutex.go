@@ -60,11 +60,6 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	//value, err := m.genValueFunc()
-	//if err != nil {
-	//	return err
-	//}
-
 	for i := 0; i < m.tries; i++ {
 		if i != 0 {
 			select {
@@ -95,21 +90,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 			m.until = until
 			return nil
 		}
-		//func() (int, error) {
-		//	ctx, cancel := context.WithTimeout(ctx, time.Duration(int64(float64(m.expiry)*m.timeoutFactor)))
-		//	defer cancel()
-		//	return m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
-		//		return m.release(ctx, pool, value)
-		//	})
-		//}()
-		//if i == m.tries-1 && err != nil {
-		//	return err
-		//}
 
-
-		//_, _ = m.actOnPoolsAsync(func(pool redis.Pool) (bool, error) {
-		//	return m.release(ctx, pool, m.version)
-		//})
 		for _, p := range m.successPools {
 			if p != nil {
 				m.failRelease(ctx, p)
@@ -141,7 +122,7 @@ func (m *Mutex) UnlockVersion(version int64) (bool, error) {
 
 func (m *Mutex) UnlockVersionContext(ctx context.Context, version int64) (bool, error) {
 	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.release(ctx, pool, m.version+1)
+		return m.release(ctx, pool, version)
 	})
 	return n >= m.quorum, err
 }
@@ -493,7 +474,7 @@ func (m *Mutex) update(ctx context.Context, pool redis.Pool, newVersion int64) (
 
 func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error, int64)) (int, error) {
 	type result struct {
-		Node   int
+		Node    int
 		Status  bool
 		Err     error
 		pool    redis.Pool
@@ -527,12 +508,16 @@ func (m *Mutex) actOnPoolsAsync(actFn func(redis.Pool) (bool, error, int64)) (in
 			err = multierror.Append(err, &ErrNodeTaken{Node: r.Node})
 		}
 	}
+
+	if len(taken) >= m.quorum {
+		return n, &ErrTaken{Nodes: taken}
+	}
 	return n, err
 }
 
 func (m *Mutex) actOnSuccessPoolsAsync(actFn func(redis.Pool) (bool, error)) (int, error) {
 	type result struct {
-		Node   int
+		Node    int
 		Status  bool
 		Err     error
 		pool    redis.Pool
@@ -544,7 +529,7 @@ func (m *Mutex) actOnSuccessPoolsAsync(actFn func(redis.Pool) (bool, error)) (in
 		if pool != nil {
 			go func(node int, pool redis.Pool) {
 				r := result{Node: node}
-				r.Status, r.Err, r.version = actFn(pool)
+				r.Status, r.Err = actFn(pool)
 				r.pool = pool
 				ch <- r
 			}(node, pool)

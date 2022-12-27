@@ -17,24 +17,28 @@ func BenchmarkMymutex(b *testing.B) {
 	//		"goredis"
 	//		"goredis_v7"
 	//		"goredis_v8"
+	//		"goredis_v9"
 	//v := cases["goredis_v7"]
 	//rs := New(v.pools...)
 	cases := []string{"redigo",
 		"goredis",
 		"goredis_v7",
-		"goredis_v8"}
+		"goredis_v8",
+		"goredis_v9"}
 	totalOps := map[string]float64{}
 	minOps := map[string]float64{
 		"redigo":     50000.0,
 		"goredis":    50000.0,
 		"goredis_v7": 50000.0,
 		"goredis_v8": 50000.0,
+		"goredis_v9": 50000.0,
 	}
 	maxOps := map[string]float64{
 		"redigo":     0.0,
 		"goredis":    0.0,
 		"goredis_v7": 0.0,
 		"goredis_v8": 0.0,
+		"goredis_v9": 0.0,
 	}
 	totalSOT := map[string]int{}
 	minSOT := map[string]int{
@@ -42,18 +46,21 @@ func BenchmarkMymutex(b *testing.B) {
 		"goredis":    50000000000,
 		"goredis_v7": 50000000000,
 		"goredis_v8": 50000000000,
+		"goredis_v9": 50000000000,
 	}
 	maxSOT := map[string]int{
 		"redigo":     0,
 		"goredis":    0,
 		"goredis_v7": 0,
 		"goredis_v8": 0,
+		"goredis_v9": 0,
 	}
 	staticSOT := map[string]map[int]int{
 		"redigo":     {},
 		"goredis":    {},
 		"goredis_v7": {},
 		"goredis_v8": {},
+		"goredis_v9": {},
 	}
 	ag := sync.WaitGroup{}
 	n := 5000

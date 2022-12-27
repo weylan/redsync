@@ -52,8 +52,8 @@ func makeCases(poolCount int) map[string]*testCase {
 }
 
 // Maintain separate blocks of servers for each type of driver
-const ServerPools = 4
-const ServerPoolSize = 4
+const ServerPools = 5
+const ServerPoolSize = 3
 const RedigoBlock = 0
 const GoredisBlock = 1
 const GoredisV7Block = 2
@@ -127,8 +127,8 @@ func newMockPoolsGoredis(n int) []redis.Pool {
 			//Network: "unix",
 			//Addr:    servers[i+offset].Socket(),
 			Network: "tcp",
-			//Addr:    "127.0.0.1:6379",
-			Addr: "10.7.69.142:6379",
+			Addr:    "127.0.0.1:6379",
+			//Addr: "10.7.69.142:6379",
 			//Addr:    "10.7.69.238:6379",
 			DB: i + offset,
 		})
@@ -145,8 +145,8 @@ func newMockPoolsGoredisV7(n int) []redis.Pool {
 	for i := 0; i < n; i++ {
 		client := goredislib_v7.NewClient(&goredislib_v7.Options{
 			Network: "tcp",
-			//Addr:    "127.0.0.1:6379",
-			Addr: "10.7.69.142:6379",
+			Addr:    "127.0.0.1:6379",
+			//Addr: "10.7.69.142:6379",
 			//Addr:    "10.7.69.238:6379",
 			DB: i + offset,
 		})
@@ -163,8 +163,8 @@ func newMockPoolsGoredisV8(n int) []redis.Pool {
 	for i := 0; i < n; i++ {
 		client := goredislib_v8.NewClient(&goredislib_v8.Options{
 			Network: "tcp",
-			//Addr:    "127.0.0.1:6379",
-			Addr: "10.7.69.142:6379",
+			Addr:    "127.0.0.1:6379",
+			//Addr: "10.7.69.142:6379",
 			//Addr:    "10.7.69.238:6379",
 			DB: i + offset,
 		})
@@ -180,8 +180,9 @@ func newMockPoolsGoredisV9(n int) []redis.Pool {
 
 	for i := 0; i < n; i++ {
 		client := goredislib_v9.NewClient(&goredislib_v9.Options{
-			Network: "unix",
-			Addr:    servers[i+offset].Socket(),
+			Network: "tcp",
+			Addr:    "127.0.0.1:6379",
+			DB:      i + offset,
 		})
 		pools[i] = goredis_v9.NewPool(client)
 	}

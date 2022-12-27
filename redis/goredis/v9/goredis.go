@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v9"
-	redsyncredis "github.com/go-redsync/redsync/v4/redis"
+	redsyncredis "github.com/weylan/redsync/redis"
 )
 
 type pool struct {
@@ -28,6 +28,11 @@ func NewPool(delegate redis.UniversalClient) redsyncredis.Pool {
 type conn struct {
 	delegate redis.UniversalClient
 	ctx      context.Context
+}
+
+func (c *conn) HGet(name, field string) (string, error) {
+	value, err := c.delegate.HGet(c.ctx, name, field).Result()
+	return value, noErrNil(err)
 }
 
 func (c *conn) Get(name string) (string, error) {

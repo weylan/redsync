@@ -1,10 +1,10 @@
 package redsync
 
 import (
+	"errors"
 	"fmt"
 	goredislib "github.com/go-redis/redis"
 	"github.com/weylan/redsync/redis/goredis"
-	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -17,7 +17,7 @@ func TestT(t *testing.T) {
 	//	TestMutex(t)
 	//}
 	client := goredislib.NewClient(&goredislib.Options{
-		Addr: "10.7.69.238:6379",
+		Addr: "127.0.0.1:6379",
 	})
 	pool := goredis.NewPool(client) // or, pool := redigo.NewPool(...)
 
@@ -413,9 +413,9 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 			genValueFunc:  nil,
 			driftFactor:   0.01,
 			timeoutFactor: 0.05,
-			quorum:       len(pools)/2 + 1,
-			pools:        pools,
-			successPools: make([]redis.Pool, 0),
+			quorum:        len(pools)/2 + 1,
+			pools:         pools,
+			successPools:  make([]redis.Pool, 0),
 		}
 	}
 	return mutexes
