@@ -63,10 +63,10 @@ func BenchmarkMymutex(b *testing.B) {
 		"goredis_v9": {},
 	}
 	ag := sync.WaitGroup{}
-	n := 5000
+	n := 10000
 	b.StartTimer()
 	testCount := 5
-	poolCount := 3
+	poolCount := 1
 	for i := 0; i < testCount; i++ {
 		for k, v := range makeCases(poolCount) {
 			counter := int64(n) //int64(b.N)

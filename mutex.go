@@ -60,6 +60,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
+	var err error
 	for i := 0; i < m.tries; i++ {
 		if i != 0 {
 			select {
@@ -72,27 +73,41 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		}
 
 		start := time.Now()
+		if m.quorum == 1 {
+			var ok bool
+			var version int64
+			ok, err, version = m.acquire(ctx, m.pools[0])
 
-		n, err := func() (int, error) {
-			ctx, cancel := context.WithTimeout(ctx, time.Duration(int64(float64(m.expiry)*m.timeoutFactor)))
-			defer cancel()
-			return m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
-				return m.acquire(ctx, pool)
-			})
-		}()
+			now := time.Now()
+			until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.driftFactor)))
+			if ok && now.Before(until) {
+				m.until = until
+				m.version = version
+				return nil
+			}
+		} else {
+			var n int
+			n, err = func() (int, error) {
+				ctx, cancel := context.WithTimeout(ctx, time.Duration(int64(float64(m.expiry)*m.timeoutFactor)))
+				defer cancel()
+				return m.actOnPoolsAsync(func(pool redis.Pool) (bool, error, int64) {
+					return m.acquire(ctx, pool)
+				})
+			}()
 
-		now := time.Now()
-		until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.driftFactor)))
-		if n >= m.quorum && now.Before(until) {
-			m.until = until
-			return nil
-		}
+			now := time.Now()
+			until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.driftFactor)))
+			if n >= m.quorum && now.Before(until) {
+				m.until = until
+				return nil
+			}
 
-		for _, p := range m.successPools {
-			if p != nil {
-				m.failRelease(ctx, p)
-				//m.successPools[idx] = nil
-				m.successPools = m.successPools[:0]
+			for _, p := range m.successPools {
+				if p != nil {
+					m.failRelease(ctx, p)
+					//m.successPools[idx] = nil
+					m.successPools = m.successPools[:0]
+				}
 			}
 		}
 		if i == m.tries-1 && err != nil {
@@ -109,11 +124,15 @@ func (m *Mutex) Unlock() (bool, error) {
 
 // UnlockContext unlocks m and returns the status of unlock.
 func (m *Mutex) UnlockContext(ctx context.Context) (bool, error) {
-	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.forceRelease(ctx, pool, m.version+1)
-	})
-	m.successPools = m.successPools[:0]
-	return n >= m.quorum, err
+	if m.quorum == 1 {
+		return m.forceRelease(ctx, m.pools[0], m.version+1)
+	} else {
+		n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.forceRelease(ctx, pool, m.version+1)
+		})
+		m.successPools = m.successPools[:0]
+		return n >= m.quorum, err
+	}
 }
 
 func (m *Mutex) UnlockVersion(version int64) (bool, error) {
@@ -121,10 +140,14 @@ func (m *Mutex) UnlockVersion(version int64) (bool, error) {
 }
 
 func (m *Mutex) UnlockVersionContext(ctx context.Context, version int64) (bool, error) {
-	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.release(ctx, pool, version)
-	})
-	return n >= m.quorum, err
+	if m.quorum == 1 {
+		return m.release(ctx, m.pools[0], version)
+	} else {
+		n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.release(ctx, pool, version)
+		})
+		return n >= m.quorum, err
+	}
 }
 
 // Extend resets the mutex's expiry and returns the status of expiry extension.
@@ -135,11 +158,18 @@ func (m *Mutex) Extend() (bool, error) {
 // ExtendContext resets the mutex's expiry and returns the status of expiry extension.
 func (m *Mutex) ExtendContext(ctx context.Context) (bool, error) {
 	start := time.Now()
-	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.touch(ctx, pool, int(m.expiry/time.Millisecond))
-	})
-	if n < m.quorum {
-		return false, err
+	if m.quorum == 1 {
+		ok, err := m.touch(ctx, m.pools[0], int(m.expiry/time.Millisecond))
+		if !ok {
+			return false, err
+		}
+	} else {
+		n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.touch(ctx, pool, int(m.expiry/time.Millisecond))
+		})
+		if n < m.quorum {
+			return false, err
+		}
 	}
 	now := time.Now()
 	until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.driftFactor)))
@@ -164,10 +194,14 @@ func (m *Mutex) SetVersion(version int64) (bool, error) {
 }
 
 func (m *Mutex) SetVersionContext(ctx context.Context, version int64) (bool, error) {
-	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.update(ctx, pool, version)
-	})
-	return n >= m.quorum, err
+	if m.quorum == 1 {
+		return m.update(ctx, m.pools[0], version)
+	} else {
+		n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.update(ctx, pool, version)
+		})
+		return n >= m.quorum, err
+	}
 }
 
 // ValidContext returns true if the lock acquired through m is still valid. It may
@@ -176,10 +210,14 @@ func (m *Mutex) SetVersionContext(ctx context.Context, version int64) (bool, err
 //
 // Deprecated: Use Until instead. See https://github.com/go-redsync/redsync/issues/72.
 func (m *Mutex) ValidContext(ctx context.Context) (bool, error) {
-	n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
-		return m.valid(ctx, pool)
-	})
-	return n >= m.quorum, err
+	if m.quorum == 1 {
+		return m.valid(ctx, m.pools[0])
+	} else {
+		n, err := m.actOnSuccessPoolsAsync(func(pool redis.Pool) (bool, error) {
+			return m.valid(ctx, pool)
+		})
+		return n >= m.quorum, err
+	}
 }
 
 func (m *Mutex) valid(ctx context.Context, pool redis.Pool) (bool, error) {
@@ -382,9 +420,6 @@ func (m *Mutex) failRelease(ctx context.Context, pool redis.Pool) (bool, error) 
 	status, err := conn.Eval(failReleaseScript, m.name)
 	if err != nil {
 		return false, err
-	}
-	if status != 0 {
-
 	}
 	return status != 0, nil
 }
