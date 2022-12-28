@@ -80,9 +80,6 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 				return m.acquire(ctx, pool)
 			})
 		}()
-		if n == 0 && err != nil {
-			return err
-		}
 
 		now := time.Now()
 		until := now.Add(m.expiry - now.Sub(start) - time.Duration(int64(float64(m.expiry)*m.driftFactor)))
@@ -97,6 +94,9 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 				//m.successPools[idx] = nil
 				m.successPools = m.successPools[:0]
 			}
+		}
+		if i == m.tries-1 && err != nil {
+			return err
 		}
 	}
 	return ErrFailed
