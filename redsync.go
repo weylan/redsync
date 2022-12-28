@@ -8,19 +8,19 @@ import (
 )
 
 const (
-	minRetryDelayMilliSec = 50
-	maxRetryDelayMilliSec = 250
+	minRetryDelayMilliSec = 10
+	maxRetryDelayMilliSec = 20
 )
 
 // Redsync provides a simple method for creating distributed mutexes using multiple Redis connection pools.
 type Redsync struct {
-	pools redis.Pool
+	pools []redis.Pool
 }
 
 // New creates and returns a new Redsync instance from given Redis connection pools.
 func New(pools ...redis.Pool) *Redsync {
 	return &Redsync{
-		pools: pools[0],
+		pools: pools,
 	}
 }
 
@@ -31,12 +31,14 @@ func (r *Redsync) NewMutex(name string, options ...Option) *Mutex {
 		expiry: 5 * time.Second,
 		tries:  32,
 		delayFunc: func(tries int) time.Duration {
-			return time.Duration(rand.Intn(maxRetryDelayMilliSec-minRetryDelayMilliSec)+minRetryDelayMilliSec) * time.Millisecond
+			return time.Duration(rand.Intn(maxRetryDelayMilliSec-minRetryDelayMilliSec)*tries/32+minRetryDelayMilliSec) * time.Millisecond
 		},
 		genValueFunc: genValue,
-		factor:       0.1, //500ms
-		quorum:       1,
+		quorum:       len(r.pools)/2 + 1,
 		pools:        r.pools,
+		successPools: make([]redis.Pool, 0),
+		driftFactor:   0.01,
+		timeoutFactor: 0.05,
 	}
 	for _, o := range options {
 		o.Apply(m)
@@ -90,7 +92,14 @@ func WithRetryDelayFunc(delayFunc DelayFunc) Option {
 // WithDriftFactor can be used to set the clock drift factor.
 func WithDriftFactor(factor float64) Option {
 	return OptionFunc(func(m *Mutex) {
-		m.factor = factor
+		m.driftFactor = factor
+	})
+}
+
+// WithTimeoutFactor can be used to set the timeout factor.
+func WithTimeoutFactor(factor float64) Option {
+	return OptionFunc(func(m *Mutex) {
+		m.timeoutFactor = factor
 	})
 }
 
@@ -101,7 +110,8 @@ func WithGenValueFunc(genValueFunc func() (string, error)) Option {
 	})
 }
 
-// WithVersion can be used to assign the random value without having to call lock. This allows the ownership of a lock to be "transfered" and allows the lock to be unlocked from elsewhere.
+// WithVersion can be used to assign the random value without having to call lock.
+// This allows the ownership of a lock to be "transferred" and allows the lock to be unlocked from elsewhere.
 func WithVersion(v int64) Option {
 	return OptionFunc(func(m *Mutex) {
 		m.version = v

@@ -1,6 +1,10 @@
 package redsync
 
 import (
+	"errors"
+	"fmt"
+	goredislib "github.com/go-redis/redis"
+	"github.com/weylan/redsync/redis/goredis"
 	"strconv"
 	"testing"
 	"time"
@@ -8,8 +12,40 @@ import (
 	"github.com/weylan/redsync/redis"
 )
 
+func TestT(t *testing.T) {
+	//for {
+	//	TestMutex(t)
+	//}
+	client := goredislib.NewClient(&goredislib.Options{
+		Addr: "127.0.0.1:6379",
+	})
+	pool := goredis.NewPool(client) // or, pool := redigo.NewPool(...)
+
+	// Create an instance of redisync to be used to obtain a mutual exclusion
+	// lock.
+	rs := New(pool)
+
+	// Obtain a new mutex by using the same name for all instances wanting the
+	// same lock.
+	mutexname := "my-global-mutex"
+	mutex := rs.NewMutex(mutexname)
+
+	// Obtain a lock for our given mutex. After this is successful, no one else
+	// can obtain the same lock (the same mutex name) until we unlock it.
+	if err := mutex.Lock(); err != nil {
+		panic(err)
+	}
+
+	// Do your work that requires the lock.
+
+	// Release the lock so other processes or threads can obtain a lock.
+	if ok, err := mutex.Unlock(); !ok || err != nil {
+		panic("unlock failed")
+	}
+}
+
 func TestMutex(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex", v.poolCount)
 			orderCh := make(chan int)
@@ -21,7 +57,7 @@ func TestMutex(t *testing.T) {
 					}
 					defer mutex.Unlock()
 
-					assertAcquired(t, v.pools, mutex)
+					assertAcquiredVersion(t, v.pools, mutex)
 
 					orderCh <- i
 				}(i, mutex)
@@ -33,8 +69,31 @@ func TestMutex(t *testing.T) {
 	}
 }
 
+func TestMutexAlreadyLocked(t *testing.T) {
+	for k, v := range makeCases(4) {
+		t.Run(k, func(t *testing.T) {
+			rs := New(v.pools...)
+			key := "test-lock"
+
+			mutex1 := rs.NewMutex(key)
+			err := mutex1.Lock()
+			if err != nil {
+				t.Fatalf("mutex lock failed: %s", err)
+			}
+			assertAcquired(t, v.pools, mutex1)
+
+			mutex2 := rs.NewMutex(key)
+			err = mutex2.Lock()
+			var errTaken *ErrTaken
+			if !errors.As(err, &errTaken) {
+				t.Fatalf("mutex was not already locked: %s", err)
+			}
+		})
+	}
+}
+
 func TestMutexExtend(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(1) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -67,7 +126,7 @@ func TestMutexExtend(t *testing.T) {
 }
 
 func TestMutexExtendExpired(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -82,8 +141,8 @@ func TestMutexExtendExpired(t *testing.T) {
 			time.Sleep(2 * time.Second)
 
 			ok, err := mutex.Extend()
-			if err != nil {
-				t.Fatalf("mutex extend failed: %s", err)
+			if err == nil {
+				t.Fatalf("mutex extend didn't fail")
 			}
 			if ok {
 				t.Fatalf("Expected ok == false, got %v", ok)
@@ -92,8 +151,30 @@ func TestMutexExtendExpired(t *testing.T) {
 	}
 }
 
+func TestMutexVersionExpired(t *testing.T) {
+	for k, v := range makeCases(3) {
+		t.Run(k, func(t *testing.T) {
+			mutexes := newTestMutexes(v.pools, "test-mutex", 1)
+			mutex := mutexes[0]
+			err := mutex.Lock()
+			if err != nil {
+				return
+			}
+			oldVersion := mutex.Version()
+			fmt.Println(oldVersion)
+			time.Sleep(10 * time.Second)
+			mutex.Lock()
+			//mutex.Unlock()
+			fmt.Println(mutex.version, " ", oldVersion)
+			if oldVersion+1 != mutex.Version() {
+				t.Fatalf("version not update")
+			}
+		})
+	}
+}
+
 func TestMutexUnlockExpired(t *testing.T) {
-	for k, v := range makeCases(8) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			mutexes := newTestMutexes(v.pools, "test-mutex-extend", 1)
 			mutex := mutexes[0]
@@ -112,7 +193,14 @@ func TestMutexUnlockExpired(t *testing.T) {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
 			if !ok {
-				t.Fatalf("Expected ok == false, got %v", ok)
+				t.Fatalf("Expected ok == true, got %v", ok)
+			}
+			ok, err = mutex.Unlock()
+			if err != nil {
+				t.Fatalf("mutex unlock failed: %s", err)
+			}
+			if ok {
+				t.Fatalf("Excepted ok == false got %v", ok)
 			}
 		})
 	}
@@ -133,11 +221,12 @@ func TestMutexQuorum(t *testing.T) {
 	//				if err != nil {
 	//					t.Fatalf("mutex lock failed: %s", err)
 	//				}
-	//				assertAcquired(t, v.pools, mutex)
+	//				assertAcquiredVersion(t, v.pools, mutex)
+	//				//assertAcquired(t, v.pools, mutex)
 	//			} else {
 	//				err := mutex.Lock()
-	//				if err != ErrFailed {
-	//					t.Fatalf("Expected err == %q, got %q", ErrFailed, err)
+	//				if errors.Is(err, &ErrNodeTaken{}) {
+	//					t.Fatalf("Expected err == %q, got %q", ErrNodeTaken{}, err)
 	//				}
 	//			}
 	//		}
@@ -156,7 +245,7 @@ func TestValid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			ok, err := mutex1.Valid()
 			if err != nil {
@@ -187,37 +276,38 @@ func TestSetVersion(t *testing.T) {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
 			defer mutex1.Unlock()
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			ok, err := mutex1.SetVersion(100)
 			if !ok || err != nil || mutex1.Version() != 100 {
 				t.Fatalf("mutex set version failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 		})
 	}
 }
 
 func TestMutexLockUnlockSplit(t *testing.T) {
-	for k, v := range makeCases(4) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			rs := New(v.pools...)
-			key := "test-split-lock"
+			key := "test-split-lock-0"
 
 			mutex1 := rs.NewMutex(key, WithExpiry(time.Hour))
 			err := mutex1.Lock()
+			defer mutex1.Unlock()
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			mutex2 := rs.NewMutex(key, WithExpiry(time.Hour), WithVersion(mutex1.version))
 			ok, err := mutex2.Unlock()
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if !ok {
-				t.Fatalf("Expected a valid mutex")
+			if ok {
+				t.Fatalf("Expected a invalid mutex")
 			}
 		})
 	}
@@ -227,32 +317,33 @@ func TestMutexLockUnlockVersion(t *testing.T) {
 	for k, v := range makeCases(4) {
 		t.Run(k, func(t *testing.T) {
 			rs := New(v.pools...)
-			key := "test-release-lock-verison"
+			key := "test-release-lock-verison-0"
 
 			mutex1 := rs.NewMutex(key, WithExpiry(time.Hour))
 			err := mutex1.Lock()
+			defer mutex1.Unlock()
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
-			assertAcquired(t, v.pools, mutex1)
+			assertAcquiredVersion(t, v.pools, mutex1)
 
 			mutex2 := rs.NewMutex(key, WithExpiry(time.Hour), WithVersion(mutex1.version))
 			ok, err := mutex2.UnlockVersion(100)
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if !ok {
-				t.Fatalf("Expected a valid mutex")
+			if ok {
+				t.Fatalf("Expected a invalid mutex")
 			}
 			ok, err = mutex1.SetVersion(100)
 			if err != nil {
 				t.Fatalf("mutex unlock failed: %s", err)
 			}
-			if ok {
-				t.Fatalf("Expected wrong")
+			if !ok {
+				t.Fatalf("Expected true")
 			}
-			mutex2.version *= -1
-			assertAcquired(t, v.pools, mutex2)
+			//mutex2.version *= -1
+			//assertAcquiredVersion(t, v.pools, mutex2)
 		})
 	}
 }
@@ -315,14 +406,16 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 	mutexes := make([]*Mutex, n)
 	for i := 0; i < n; i++ {
 		mutexes[i] = &Mutex{
-			name:         name,
-			expiry:       8 * time.Second,
-			tries:        32,
-			delayFunc:    func(tries int) time.Duration { return 500 * time.Millisecond },
-			genValueFunc: nil,
-			factor:       0.01,
-			quorum:       1,
-			pools:        pools[0],
+			name:          name + "-" + strconv.Itoa(i),
+			expiry:        8 * time.Second,
+			tries:         32,
+			delayFunc:     func(tries int) time.Duration { return 500 * time.Millisecond },
+			genValueFunc:  nil,
+			driftFactor:   0.01,
+			timeoutFactor: 0.05,
+			quorum:        len(pools)/2 + 1,
+			pools:         pools,
+			successPools:  make([]redis.Pool, 0),
 		}
 	}
 	return mutexes
@@ -333,6 +426,39 @@ func assertAcquired(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	values := getPoolValues(pools, mutex.name)
 	for _, value := range values {
 		if value == strconv.Itoa(int(mutex.version)*-1) {
+			n++
+		}
+	}
+	if n < mutex.quorum {
+		t.Fatalf("Expected n >= %d, got %d", mutex.quorum, n)
+	}
+}
+
+func getPoolVersion(pools []redis.Pool, name string) []string {
+	values := make([]string, len(pools))
+	for i, pool := range pools {
+		if pool != nil {
+			conn, err := pool.Get(nil)
+			if err != nil {
+				panic(err)
+			}
+			value, err := conn.HGet(name, "version")
+			if err != nil {
+				panic(err)
+			}
+			_ = conn.Close()
+			values[i] = value
+		}
+	}
+	return values
+}
+
+func assertAcquiredVersion(t *testing.T, pools []redis.Pool, mutex *Mutex) {
+	n := 0
+	values := getPoolVersion(mutex.successPools, mutex.name)
+	for _, value := range values {
+		v, _ := strconv.Atoi(value)
+		if v < 0 && v >= int(mutex.version)*-1 {
 			n++
 		}
 	}
