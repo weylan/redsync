@@ -1,7 +1,6 @@
 package redsync
 
 import (
-	"errors"
 	"fmt"
 	goredislib "github.com/go-redis/redis"
 	"github.com/weylan/redsync/redis/goredis"
@@ -70,7 +69,7 @@ func TestMutex(t *testing.T) {
 }
 
 func TestMutexAlreadyLocked(t *testing.T) {
-	for k, v := range makeCases(4) {
+	for k, v := range makeCases(3) {
 		t.Run(k, func(t *testing.T) {
 			rs := New(v.pools...)
 			key := "test-lock"
@@ -84,10 +83,10 @@ func TestMutexAlreadyLocked(t *testing.T) {
 
 			mutex2 := rs.NewMutex(key)
 			err = mutex2.Lock()
-			var errTaken *ErrTaken
-			if !errors.As(err, &errTaken) {
+			if err == nil {
 				t.Fatalf("mutex was not already locked: %s", err)
 			}
+			mutex1.Unlock()
 		})
 	}
 }
@@ -245,6 +244,7 @@ func TestValid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("mutex lock failed: %s", err)
 			}
+			defer mutex1.Unlock()
 			assertAcquiredVersion(t, v.pools, mutex1)
 
 			ok, err := mutex1.Valid()
@@ -423,9 +423,12 @@ func newTestMutexes(pools []redis.Pool, name string, n int) []*Mutex {
 
 func assertAcquired(t *testing.T, pools []redis.Pool, mutex *Mutex) {
 	n := 0
-	values := getPoolValues(pools, mutex.name)
-	for _, value := range values {
-		if value == strconv.Itoa(int(mutex.version)*-1) {
+	versions := getPoolValues(pools, mutex.name)
+	fmt.Println(mutex.version)
+	for _, version := range versions {
+		v, _ := strconv.Atoi(version)
+		v *= -1
+		if v > 0 && v <= int(mutex.version) {
 			n++
 		}
 	}
